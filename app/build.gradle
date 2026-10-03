@@ -57,6 +57,15 @@ android {
         resValues = true
     }
 
+    // Native QEMU executables are intentionally packaged as lib*.so payloads.
+    // Legacy JNI packaging makes Android extract them to nativeLibraryDir, which
+    // is executable and can be launched directly without going through proot.
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
     splits {
         abi {
             enable false
