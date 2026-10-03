@@ -72,6 +72,7 @@ public class MainService extends Service {
             if (service != null) {
                 service.stopForeground(true);
                 service.stopSelf();
+                NativeQemuRunner.stop();
                 VMManager.killallqemuprocesses(activityContext);
             }
         }).start();
@@ -81,6 +82,7 @@ public class MainService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && Objects.equals(intent.getAction(), STOP_ACTION)) {
             new Thread(() -> {
+                NativeQemuRunner.stop();
                 VMManager.killallqemuprocesses(this);
                 new Handler(Looper.getMainLooper()).post(() -> {
                     stopForeground(true);
@@ -109,6 +111,28 @@ public class MainService extends Service {
     }
 
     public static void startCommand(String vmName, String env, Context context) {
+        if (NativeQemuRunner.canExecute(context, env)) {
+            Log.i(TAG, "Using native Android QEMU backend");
+            NativeQemuRunner.execute(context, env, new NativeQemuRunner.Callback() {
+                @Override
+                public void onRunning(String command, String newLine) {
+                    // Logs are already forwarded by NativeQemuRunner.
+                }
+
+                @Override
+                public void onFinished(String command, String log, int status) {
+                    handleFinished(vmName, command, log, status, context, 0);
+                }
+
+                @Override
+                public void onError(String command, Exception exception) {
+                    handleError(command, exception, context);
+                }
+            });
+            return;
+        }
+
+        Log.i(TAG, "Native QEMU payload unavailable; falling back to proot backend");
         Terminal2 terminal2 = new Terminal2(activityContext);
         terminal2.setDefaultShellBash();
         terminal2.setStartup("export XDG_RUNTIME_DIR=/tmp && unset PULSE_SERVER");
@@ -120,57 +144,68 @@ public class MainService extends Service {
 
             @Override
             public void onFinished(String command, String log, int status) {
-                if (context instanceof Activity activity) {
-                    if (activity.isFinishing() || activity.isDestroyed()) {
-                        return;
-                    }
-                } else {
-                    Log.e(TAG, "context is not an Activity");
-                    return;
-                }
-
-                if (!(log.trim().isEmpty() || log.trim().equals(MainStartVM.TAG_FINISHED_WITHOUT_ERROR))) {
-                    new Handler(Looper.getMainLooper()).post(() -> {
-                        MainStartVM.dismissDialog();
-
-                        if (!VMManager.isExecutedCommandError(command, log, context)) {
-                            if (!SettingsData.alwaysShowLog(context) && status == terminal2.SUCCESS) return;
-
-                            String finalLog = log.contains(MainStartVM.TAG_FINISHED_WITHOUT_ERROR) ? log.substring(0, log.lastIndexOf(MainStartVM.TAG_FINISHED_WITHOUT_ERROR) - 1) : log;
-
-                            DialogUtils.twoDialog(context, vmName, finalLog, context.getString(R.string.copy), context.getString(R.string.close), true, R.drawable.stack_24px, true,
-                                    () -> ClipboardUltils.copyToClipboard(context, log), null, null);
-                        }
-                    });
-                }
-
-                VmServiceManager.stopService(context);
+                handleFinished(vmName, command, log, status, context, terminal2.SUCCESS);
             }
 
             @Override
             public void onError(String command, Exception exception) {
-                if (context instanceof Activity activity) {
-                    if (activity.isFinishing() || activity.isDestroyed()) {
-                        return;
-                    }
-                } else {
-                    Log.e(TAG, "context is not an Activity");
-                    return;
-                }
-
-                new Handler(Looper.getMainLooper()).post(() -> {
-                    VMManager.isQemuStopedWithError = true;
-                    MainStartVM.dismissDialog();
-
-                    if (Objects.requireNonNull(exception.getMessage()).contains("android.content.Context.getFilesDir()")) {
-                        CrashTrackerUtils.showCoreFeatureErrorDialog(activity,exception);
-                        return;
-                    }
-
-                    DialogUtils.twoDialog(context, activity.getString(R.string.something_went_wrong), exception.getMessage(), context.getString(R.string.copy), context.getString(R.string.close), true, R.drawable.round_terminal_24, true,
-                            () -> ClipboardUltils.copyToClipboard(context, exception.getMessage()), null, null);
-                });
+                handleError(command, exception, context);
             }
+        });
+    }
+
+    private static void handleFinished(String vmName, String command, String log, int status, Context context, int successStatus) {
+        if (context instanceof Activity activity) {
+            if (activity.isFinishing() || activity.isDestroyed()) {
+                return;
+            }
+        } else {
+            Log.e(TAG, "context is not an Activity");
+            return;
+        }
+
+        if (!(log.trim().isEmpty() || log.trim().equals(MainStartVM.TAG_FINISHED_WITHOUT_ERROR))) {
+            new Handler(Looper.getMainLooper()).post(() -> {
+                MainStartVM.dismissDialog();
+
+                if (!VMManager.isExecutedCommandError(command, log, context)) {
+                    if (!SettingsData.alwaysShowLog(context) && status == successStatus) return;
+
+                    String finalLog = log.contains(MainStartVM.TAG_FINISHED_WITHOUT_ERROR)
+                            ? log.substring(0, log.lastIndexOf(MainStartVM.TAG_FINISHED_WITHOUT_ERROR) - 1)
+                            : log;
+
+                    DialogUtils.twoDialog(context, vmName, finalLog, context.getString(R.string.copy), context.getString(R.string.close), true, R.drawable.stack_24px, true,
+                            () -> ClipboardUltils.copyToClipboard(context, log), null, null);
+                }
+            });
+        }
+
+        VmServiceManager.stopService(context);
+    }
+
+    private static void handleError(String command, Exception exception, Context context) {
+        if (context instanceof Activity activity) {
+            if (activity.isFinishing() || activity.isDestroyed()) {
+                return;
+            }
+        } else {
+            Log.e(TAG, "context is not an Activity");
+            return;
+        }
+
+        new Handler(Looper.getMainLooper()).post(() -> {
+            VMManager.isQemuStopedWithError = true;
+            MainStartVM.dismissDialog();
+
+            String message = exception.getMessage() == null ? exception.toString() : exception.getMessage();
+            if (message.contains("android.content.Context.getFilesDir()")) {
+                CrashTrackerUtils.showCoreFeatureErrorDialog(activity, exception);
+                return;
+            }
+
+            DialogUtils.twoDialog(context, activity.getString(R.string.something_went_wrong), message, context.getString(R.string.copy), context.getString(R.string.close), true, R.drawable.round_terminal_24, true,
+                    () -> ClipboardUltils.copyToClipboard(context, message), null, null);
         });
     }
 }
