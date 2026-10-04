@@ -19,6 +19,7 @@ using qemu_init_t = void (*)(int, char **);
 using qemu_main_loop_t = void (*)();
 using qemu_cleanup_t = void (*)();
 using legacy_main_t = int (*)(int, char **, char **);
+using shutdown_request_t = void (*)(int);
 
 std::string dl_error_or(const char *fallback) {
     const char *error = dlerror();
@@ -26,9 +27,7 @@ std::string dl_error_or(const char *fallback) {
 }
 
 void free_argv(std::vector<char *> &argv) {
-    for (char *arg : argv) {
-        std::free(arg);
-    }
+    for (char *arg : argv) std::free(arg);
     argv.clear();
 }
 } // namespace
@@ -38,10 +37,7 @@ JNIEXPORT jstring JNICALL
 Java_com_vectras_vm_NativeQemuBridge_start(JNIEnv *env, jclass,
                                             jstring library_path,
                                             jobjectArray java_argv) {
-    if (g_running.exchange(true)) {
-        return env->NewStringUTF("Native QEMU is already running");
-    }
-
+    if (g_running.exchange(true)) return env->NewStringUTF("Native QEMU is already running");
     if (library_path == nullptr || java_argv == nullptr) {
         g_running = false;
         return env->NewStringUTF("Invalid native QEMU arguments");
@@ -66,14 +62,12 @@ Java_com_vectras_vm_NativeQemuBridge_start(JNIEnv *env, jclass,
                 argv.push_back(strdup(""));
                 continue;
             }
-
             const char *chars = env->GetStringUTFChars(item, nullptr);
             if (chars == nullptr) {
                 env->DeleteLocalRef(item);
                 result = "Unable to decode a QEMU argument";
                 break;
             }
-
             argv.push_back(strdup(chars));
             env->ReleaseStringUTFChars(item, chars);
             env->DeleteLocalRef(item);
@@ -97,13 +91,10 @@ Java_com_vectras_vm_NativeQemuBridge_start(JNIEnv *env, jclass,
 
         if (qemu_init != nullptr && init_error == nullptr) {
             dlerror();
-            auto qemu_main_loop = reinterpret_cast<qemu_main_loop_t>(
-                    dlsym(g_qemu_handle, "qemu_main_loop"));
+            auto qemu_main_loop = reinterpret_cast<qemu_main_loop_t>(dlsym(g_qemu_handle, "qemu_main_loop"));
             const char *loop_error = dlerror();
-
             dlerror();
-            auto qemu_cleanup = reinterpret_cast<qemu_cleanup_t>(
-                    dlsym(g_qemu_handle, "qemu_cleanup"));
+            auto qemu_cleanup = reinterpret_cast<qemu_cleanup_t>(dlsym(g_qemu_handle, "qemu_cleanup"));
             const char *cleanup_error = dlerror();
 
             if (qemu_main_loop == nullptr || loop_error != nullptr) {
@@ -115,7 +106,6 @@ Java_com_vectras_vm_NativeQemuBridge_start(JNIEnv *env, jclass,
                 break;
             }
 
-            LOGI("Starting QEMU through qemu_init/qemu_main_loop");
             qemu_init(static_cast<int>(argc), argv.data());
             qemu_main_loop();
             qemu_cleanup();
@@ -127,8 +117,6 @@ Java_com_vectras_vm_NativeQemuBridge_start(JNIEnv *env, jclass,
                 result = "Neither qemu_init nor main is exported by the QEMU library";
                 break;
             }
-
-            LOGI("Starting QEMU through legacy main()");
             legacy_main(static_cast<int>(argc), argv.data(), nullptr);
         }
     } while (false);
@@ -142,12 +130,7 @@ Java_com_vectras_vm_NativeQemuBridge_start(JNIEnv *env, jclass,
     env->ReleaseStringUTFChars(library_path, library_path_chars);
     g_running = false;
 
-    if (!result.empty()) {
-        LOGE("Native QEMU stopped with loader error: %s", result.c_str());
-    } else {
-        LOGI("Native QEMU stopped cleanly");
-    }
-
+    if (!result.empty()) LOGE("Native QEMU loader error: %s", result.c_str());
     return env->NewStringUTF(result.c_str());
 }
 
@@ -155,4 +138,23 @@ extern "C"
 JNIEXPORT jboolean JNICALL
 Java_com_vectras_vm_NativeQemuBridge_isRunning(JNIEnv *, jclass) {
     return g_running.load() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_vectras_vm_NativeQemuBridge_requestStop(JNIEnv *, jclass) {
+    if (!g_running.load() || g_qemu_handle == nullptr) return JNI_FALSE;
+
+    dlerror();
+    auto shutdown_request = reinterpret_cast<shutdown_request_t>(
+            dlsym(g_qemu_handle, "qemu_system_shutdown_request"));
+    const char *error = dlerror();
+    if (shutdown_request == nullptr || error != nullptr) {
+        LOGE("qemu_system_shutdown_request unavailable: %s", error ? error : "unknown error");
+        return JNI_FALSE;
+    }
+
+    // SHUTDOWN_CAUSE_HOST_SIGNAL in current QEMU releases.
+    shutdown_request(3);
+    return JNI_TRUE;
 }
