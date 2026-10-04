@@ -47,6 +47,7 @@ jobs:
           p = Path('x11-packages/qemu-system-x86-64/build.sh')
           s = p.read_text()
           replacements = {
+              '--audio-drv-list=pa,sdl \\': '--audio-drv-list=pa \\',
               '--enable-sdl \\': '--disable-sdl \\',
               '--enable-sdl-image \\': '--disable-sdl-image \\',
               '--enable-gtk \\': '--disable-gtk \\',
@@ -61,7 +62,7 @@ jobs:
               s = s.replace(needle, needle + '\t\t--disable-modules \\\n')
           p.write_text(s)
           PY
-          grep -E -- '--(enable-vnc|disable-modules|disable-gtk|disable-sdl|disable-opengl|disable-spice)' x11-packages/qemu-system-x86-64/build.sh
+          grep -E -- '--(audio-drv-list|enable-vnc|disable-modules|disable-gtk|disable-sdl|disable-opengl|disable-spice)' x11-packages/qemu-system-x86-64/build.sh
 
       - name: Build Android arm64 QEMU with Termux toolchain
         working-directory: termux-packages
