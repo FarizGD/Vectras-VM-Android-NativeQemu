@@ -13,6 +13,10 @@ on:
       - 'app/src/main/cpp/native-qemu-loader.cpp'
       - 'app/src/main/cpp/CMakeLists.txt'
       - 'app/build.gradle'
+      - 'terminal-view/build.gradle'
+      - 'terminal-emulator/build.gradle'
+      - 'build.gradle'
+      - 'gradle/wrapper/**'
 
 permissions:
   contents: write
