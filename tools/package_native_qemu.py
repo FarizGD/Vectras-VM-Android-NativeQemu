@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Package an Android/Termux QEMU prefix into Vectras.
 
-QEMU PIE executables are renamed to libqemu-system-*.so so Android installs them
+QEMU PIE executables are renamed to libqemu-*.so so Android installs them
 in the executable nativeLibraryDir. Their non-system DT_NEEDED dependencies and
 QEMU firmware data are stored as assets and extracted into app-private storage
 at first launch.
@@ -16,7 +16,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-TARGETS = ("qemu-system-x86_64", "qemu-system-aarch64", "qemu-system-i386", "qemu-system-ppc")
+TARGETS = (
+    "qemu-system-x86_64",
+    "qemu-system-aarch64",
+    "qemu-system-i386",
+    "qemu-system-ppc",
+    "qemu-img",
+)
 NEEDED_RE = re.compile(r"Shared library: \[(.+?)\]")
 SYSTEM_LIBS = {
     "libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so",
@@ -86,7 +92,7 @@ def main() -> int:
         print(f"packaged {target} -> {destination}")
 
     if packaged_targets == 0:
-        raise SystemExit("No QEMU system executables were found in the supplied prefix")
+        raise SystemExit("No QEMU executables were found in the supplied prefix")
 
     copied: set[str] = set()
     examined: set[Path] = set()
@@ -118,8 +124,6 @@ def main() -> int:
     else:
         print(f"warning: QEMU firmware directory missing: {share}")
 
-    # Keep diagnostics in the APK assets. This makes device linker failures much
-    # easier to compare with what CI actually bundled.
     manifest = assets_dir / "runtime-manifest.txt"
     manifest.write_text(
         "QEMU native runtime\n"
@@ -129,7 +133,7 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    print(f"Bundled {packaged_targets} QEMU targets and {len(copied)} runtime libraries")
+    print(f"Bundled {packaged_targets} QEMU executables and {len(copied)} runtime libraries")
     if unresolved:
         print("Unresolved DT_NEEDED entries (normally Android system libraries):")
         for name in sorted(unresolved):
