@@ -7,9 +7,7 @@ on:
     paths:
       - '.github/workflows/native-qemu.yml'
       - 'tools/package_native_qemu.py'
-      - 'app/src/main/java/com/vectras/vm/NativeQemuRunner.java'
-      - 'app/src/main/java/com/vectras/vm/NativeQemuRuntime.java'
-      - 'app/src/main/java/com/vectras/vm/NativeQemuBridge.java'
+      - 'app/src/main/java/com/vectras/vm/**'
       - 'app/src/main/cpp/native-qemu-loader.cpp'
       - 'app/src/main/cpp/CMakeLists.txt'
       - 'app/build.gradle'
