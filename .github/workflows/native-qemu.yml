@@ -1,0 +1,119 @@
+name: Build Native QEMU APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/native-qemu.yml'
+      - 'tools/package_native_qemu.py'
+      - 'app/src/main/java/com/vectras/vm/NativeQemuRunner.java'
+      - 'app/src/main/java/com/vectras/vm/NativeQemuRuntime.java'
+      - 'app/src/main/java/com/vectras/vm/NativeQemuBridge.java'
+      - 'app/src/main/cpp/native-qemu-loader.cpp'
+      - 'app/src/main/cpp/CMakeLists.txt'
+      - 'app/build.gradle'
+
+jobs:
+  build:
+    name: arm64 native QEMU + debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Checkout Vectras
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android/sdk/ndk/25* || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          docker system prune -af || true
+
+      - name: Install host tools
+        run: sudo apt-get update && sudo apt-get install -y binutils patchelf
+
+      - name: Checkout Termux packages
+        run: git clone --depth=1 https://github.com/termux/termux-packages.git termux-packages
+
+      - name: Configure lean VNC QEMU build
+        working-directory: termux-packages
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('x11-packages/qemu-system-x86-64/build.sh')
+          s = p.read_text()
+          replacements = {
+              '--enable-sdl \\': '--disable-sdl \\',
+              '--enable-sdl-image \\': '--disable-sdl-image \\',
+              '--enable-gtk \\': '--disable-gtk \\',
+              '--enable-opengl \\': '--disable-opengl \\',
+              '--enable-virglrenderer \\': '--disable-virglrenderer \\',
+              '--enable-spice \\': '--disable-spice \\',
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          needle = '--disable-stack-protector \\\n'
+          if '--disable-modules \\' not in s:
+              s = s.replace(needle, needle + '\t\t--disable-modules \\\n')
+          p.write_text(s)
+          PY
+          grep -E -- '--(enable-vnc|disable-modules|disable-gtk|disable-sdl|disable-opengl|disable-spice)' x11-packages/qemu-system-x86-64/build.sh
+
+      - name: Build Android arm64 QEMU with Termux toolchain
+        working-directory: termux-packages
+        run: ./scripts/run-docker.sh ./build-package.sh -I -a aarch64 x11-packages/qemu-system-x86-64
+
+      - name: Export Android QEMU prefix
+        run: |
+          docker exec termux-package-builder bash -lc '
+            cd /data/data/com.termux/files/usr &&
+            tar -czf /tmp/vectras-qemu-prefix.tar.gz bin/qemu-system-* lib share/qemu
+          '
+          docker cp termux-package-builder:/tmp/vectras-qemu-prefix.tar.gz ./vectras-qemu-prefix.tar.gz
+          mkdir -p qemu-prefix
+          tar -xzf vectras-qemu-prefix.tar.gz -C qemu-prefix
+          file qemu-prefix/bin/qemu-system-x86_64
+          readelf -h qemu-prefix/bin/qemu-system-x86_64 | head -n 20
+
+      - name: Package QEMU into Android project
+        run: |
+          python3 tools/package_native_qemu.py \
+            --prefix "$PWD/qemu-prefix" \
+            --jni-dir "$PWD/app/src/main/jniLibs/arm64-v8a" \
+            --assets-dir "$PWD/app/src/main/assets/native-qemu"
+          cat app/src/main/assets/native-qemu/runtime-manifest.txt
+          du -sh app/src/main/jniLibs/arm64-v8a app/src/main/assets/native-qemu
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Vectras debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Verify native payload is in APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'lib/arm64-v8a/libqemu-system-(x86_64|aarch64|i386|ppc)\.so'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'assets/native-qemu/runtime-manifest.txt'
+
+      - name: Upload native Vectras APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectras-native-qemu-arm64-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          compression-level: 0
+
+      - name: Upload runtime manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-qemu-runtime-manifest
+          path: app/src/main/assets/native-qemu/runtime-manifest.txt
