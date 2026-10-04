@@ -1,8 +1,17 @@
 plugins {
     id 'com.android.application'
-    id 'com.google.gms.google-services'
-    id 'com.google.firebase.crashlytics'
     id 'com.google.android.gms.oss-licenses-plugin'
+}
+
+// The public source tree intentionally does not contain google-services.json.
+// Keep Firebase/Crashlytics enabled for local builds that provide their config,
+// but do not make open-source CI builds depend on a private Firebase file.
+def googleServicesConfig = file('google-services.json')
+if (googleServicesConfig.exists()) {
+    apply plugin: 'com.google.gms.google-services'
+    apply plugin: 'com.google.firebase.crashlytics'
+} else {
+    logger.lifecycle('google-services.json not found - building without Google Services/Crashlytics Gradle plugins')
 }
 
 android {
