@@ -112,6 +112,15 @@ public class Terminal2 {
             try {
                 String fullCommand = (startup.isEmpty() ? "" : startup + " && ") + command;
 
+                // SystemMonitor's legacy process probe used to run inside Alpine.
+                // Native builds can report the in-app QEMU process without proot.
+                if (NativeQemuRunner.canExecute(context, "qemu-system-x86_64") && command.startsWith("ps -e command")) {
+                    String result = (NativeQemuRunner.isRunning() ? "qemu-system-x86_64 -qmp\n" : "") + "psendhere\n";
+                    addToLogs(command, result);
+                    if (callback != null) callback.onFinished(command, result, SUCCESS);
+                    return;
+                }
+
                 // Native-QEMU builds do not contain the legacy Alpine/proot rootfs.
                 // Route packaged QEMU tools (qemu-system-* and qemu-img) directly.
                 if (NativeQemuRunner.canExecute(context, command)) {
