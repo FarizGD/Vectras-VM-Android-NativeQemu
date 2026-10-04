@@ -125,6 +125,10 @@ public class SplashActivity extends AppCompatActivity {
     private void finishSplash() {
         if (MainSettingsManager.getShowLastCrashLog(this)) {
             startActivity(new Intent(this, LastCrashActivity.class));
+        } else if (NativeQemuRunner.canExecute(this, "qemu-system-x86_64")) {
+            // Native-QEMU builds already contain their VM runtime. Do not send them
+            // through the legacy proot/Alpine bootstrap just to reach the main UI.
+            startActivity(new Intent(this, MainActivity.class));
         } else if (SetupFeatureCore.isInstalledQemu(this)) {
             if (MainSettingsManager.getCoreSetupVersion(this) != AppConfig.coreSetupVersion) {
                 Intent intent = new Intent();
