@@ -8,6 +8,7 @@ on:
       - '.github/workflows/native-qemu.yml'
       - 'tools/package_native_qemu.py'
       - 'app/src/main/java/com/vectras/vm/**'
+      - 'app/src/main/java/com/vectras/vterm/**'
       - 'app/src/main/cpp/native-qemu-loader.cpp'
       - 'app/src/main/cpp/CMakeLists.txt'
       - 'app/build.gradle'
@@ -74,12 +75,12 @@ jobs:
         run: |
           docker exec termux-package-builder bash -lc '
             cd /data/data/com.termux/files/usr &&
-            tar -czf /tmp/vectras-qemu-prefix.tar.gz bin/qemu-system-* lib share/qemu
+            tar -czf /tmp/vectras-qemu-prefix.tar.gz bin/qemu-system-* bin/qemu-img lib share/qemu
           '
           docker cp termux-package-builder:/tmp/vectras-qemu-prefix.tar.gz ./vectras-qemu-prefix.tar.gz
           mkdir -p qemu-prefix
           tar -xzf vectras-qemu-prefix.tar.gz -C qemu-prefix
-          file qemu-prefix/bin/qemu-system-x86_64
+          file qemu-prefix/bin/qemu-system-x86_64 qemu-prefix/bin/qemu-img
           readelf -h qemu-prefix/bin/qemu-system-x86_64 | head -n 20
 
       - name: Package QEMU into Android project
@@ -111,6 +112,7 @@ jobs:
       - name: Verify native payload is in APK
         run: |
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'lib/arm64-v8a/libqemu-system-(x86_64|aarch64|i386|ppc)\.so'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libqemu-img.so'
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'assets/native-qemu/runtime-manifest.txt'
 
       - name: Prepare release files
