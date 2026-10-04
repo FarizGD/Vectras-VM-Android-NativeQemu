@@ -3,19 +3,28 @@ package com.vectras.vm;
 import android.content.Context;
 import android.util.Log;
 
+import com.vectras.vm.logger.VectrasStatus;
+
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Runs packaged Android-native QEMU shared libraries without proot. */
+/** Runs packaged Android-native QEMU without entering the legacy proot distro. */
 public final class NativeQemuRunner {
     private static final String TAG = "NativeQemuRunner";
+    private static final int MAX_LOG_SIZE = 200_000;
     private static final Pattern QEMU_COMMAND_PATTERN = Pattern.compile(
             "(^|\\s)(qemu-system-(?:i386|x86_64|aarch64|ppc))(?=\\s|$)"
     );
+
+    private static volatile Process currentProcess;
 
     private NativeQemuRunner() {}
 
@@ -30,17 +39,16 @@ public final class NativeQemuRunner {
     }
 
     public static boolean canExecute(Context context, String command) {
-        if (context == null || !NativeQemuBridge.isAvailable() || !isQemuCommand(command)) return false;
-
+        if (context == null || !isQemuCommand(command)) return false;
         String qemuName = extractQemuName(command);
         if (qemuName == null) return false;
-
-        File library = getNativeLibrary(context, qemuName);
-        boolean available = library.isFile();
-        if (!available) Log.i(TAG, "Native QEMU library not available: " + library.getAbsolutePath());
+        File payload = getNativeLibrary(context, qemuName);
+        boolean available = payload.isFile();
+        if (!available) Log.i(TAG, "Native QEMU payload not available: " + payload.getAbsolutePath());
         return available;
     }
 
+    /** Android extracts lib*.so entries into an executable native-library directory. */
     public static File getNativeLibrary(Context context, String qemuName) {
         return new File(context.getApplicationInfo().nativeLibraryDir, "lib" + qemuName + ".so");
     }
@@ -54,36 +62,142 @@ public final class NativeQemuRunner {
             String qemuName = extractQemuName(command);
             if (qemuName == null) throw new IllegalArgumentException("No supported qemu-system executable found");
 
-            File library = getNativeLibrary(context, qemuName);
-            if (!library.isFile()) throw new IllegalStateException("Native QEMU library is missing: " + library);
+            File payload = getNativeLibrary(context, qemuName);
+            if (!payload.isFile()) throw new IllegalStateException("Native QEMU payload is missing: " + payload);
 
-            String[] argv = splitShellCommand(command);
-            if (argv.length == 0) throw new IllegalArgumentException("QEMU command is empty");
+            String invocation = extractQemuInvocation(command);
+            String[] parsed = splitShellCommand(invocation);
+            if (parsed.length == 0) throw new IllegalArgumentException("QEMU command is empty");
 
-            Log.i(TAG, "Starting in-process native QEMU: " + library.getAbsolutePath());
-            String result = NativeQemuBridge.start(library.getAbsolutePath(), argv);
-            int status = result == null || result.isEmpty() ? 0 : 1;
-            if (callback != null) callback.onFinished(command, result == null ? "" : result, status);
+            File runtime = NativeQemuRuntime.ensureInstalled(context);
+            List<String> argv = new ArrayList<>(Arrays.asList(parsed));
+            argv.set(0, payload.getAbsolutePath());
+
+            File firmware = new File(runtime, "share/qemu");
+            if (firmware.isDirectory() && !containsOption(argv, "-L")) {
+                argv.add("-L");
+                argv.add(firmware.getAbsolutePath());
+            }
+
+            try {
+                runNativeProcess(context, command, argv, runtime, callback);
+            } catch (java.io.IOException processError) {
+                // A future build may package QEMU as a true shared object rather than a PIE
+                // executable. Keep the independent JNI loader as a compatible fallback.
+                if (!NativeQemuBridge.isAvailable()) throw processError;
+                Log.w(TAG, "Direct QEMU exec failed, trying JNI loader", processError);
+                String[] jniArgv = argv.toArray(new String[0]);
+                String result = NativeQemuBridge.start(payload.getAbsolutePath(), jniArgv);
+                int status = result == null || result.isEmpty() ? 0 : 1;
+                if (callback != null) callback.onFinished(command, result == null ? "" : result, status);
+            }
         } catch (Exception e) {
             Log.e(TAG, "Native QEMU failed", e);
             if (callback != null) callback.onError(command, e);
         }
     }
 
+    private static void runNativeProcess(Context context, String originalCommand, List<String> argv,
+                                         File runtime, Callback callback) throws Exception {
+        Log.i(TAG, "Starting native Android QEMU: " + argv.get(0));
+        ProcessBuilder builder = new ProcessBuilder(argv);
+        builder.redirectErrorStream(true);
+        builder.directory(context.getFilesDir());
+
+        File runtimeLib = new File(runtime, "lib");
+        String nativeLibDir = context.getApplicationInfo().nativeLibraryDir;
+        builder.environment().put("LD_LIBRARY_PATH", nativeLibDir + ":" + runtimeLib.getAbsolutePath());
+        builder.environment().put("HOME", context.getFilesDir().getAbsolutePath());
+        builder.environment().put("TMPDIR", context.getCacheDir().getAbsolutePath());
+        builder.environment().put("XDG_RUNTIME_DIR", context.getCacheDir().getAbsolutePath());
+        builder.environment().put("QEMU_MODULE_DIR", new File(runtimeLib, "qemu").getAbsolutePath());
+        if (originalCommand.contains("export DISPLAY=:0")) builder.environment().put("DISPLAY", ":0");
+
+        Process process = builder.start();
+        currentProcess = process;
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                VectrasStatus.logError(line);
+                output.append(line).append('\n');
+                if (output.length() > MAX_LOG_SIZE) output.delete(0, output.length() - MAX_LOG_SIZE);
+                if (callback != null) callback.onRunning(originalCommand, line);
+            }
+        }
+        int status = process.waitFor();
+        currentProcess = null;
+        if (callback != null) callback.onFinished(originalCommand, output.toString(), status);
+    }
+
     public static synchronized void stop() {
+        Process process = currentProcess;
+        if (process != null) {
+            process.destroy();
+            try {
+                if (!process.waitFor(1500, TimeUnit.MILLISECONDS)) process.destroyForcibly();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                process.destroyForcibly();
+            } finally {
+                currentProcess = null;
+            }
+            return;
+        }
         if (NativeQemuBridge.isAvailable() && NativeQemuBridge.isRunning()) {
             if (!NativeQemuBridge.requestStop()) Log.w(TAG, "Native QEMU refused shutdown request");
         }
     }
 
     public static boolean isRunning() {
-        return NativeQemuBridge.isAvailable() && NativeQemuBridge.isRunning();
+        Process process = currentProcess;
+        return (process != null && process.isAlive()) ||
+                (NativeQemuBridge.isAvailable() && NativeQemuBridge.isRunning());
+    }
+
+    private static boolean containsOption(List<String> args, String option) {
+        for (String arg : args) if (option.equals(arg)) return true;
+        return false;
     }
 
     private static String extractQemuName(String command) {
         if (command == null) return null;
         Matcher matcher = QEMU_COMMAND_PATTERN.matcher(command);
         return matcher.find() ? matcher.group(2).toLowerCase(Locale.ROOT) : null;
+    }
+
+    /** Pull the actual QEMU invocation out of MainStartVM's logging/cleanup shell wrapper. */
+    static String extractQemuInvocation(String command) {
+        Matcher matcher = QEMU_COMMAND_PATTERN.matcher(command);
+        if (!matcher.find()) throw new IllegalArgumentException("No QEMU invocation found");
+        int start = matcher.start(2);
+        int end = command.length();
+
+        String[] markers = {" && echo '" + com.vectras.vm.main.core.MainStartVM.TAG_FINISHED_WITHOUT_ERROR, "\nrm -r "};
+        for (String marker : markers) {
+            int candidate = command.indexOf(marker, start);
+            if (candidate >= 0 && candidate < end) end = candidate;
+        }
+
+        String result = command.substring(start, end).trim();
+        // MainStartVM can wrap X11 commands in bash -c "...". That outer closing
+        // quote is not part of QEMU argv. Remove it only when quote parity is odd.
+        if (result.endsWith("\"") && hasOddUnescapedDoubleQuotes(result)) {
+            result = result.substring(0, result.length() - 1).trim();
+        }
+        return result;
+    }
+
+    private static boolean hasOddUnescapedDoubleQuotes(String value) {
+        int count = 0;
+        boolean escape = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (escape) { escape = false; continue; }
+            if (c == '\\') { escape = true; continue; }
+            if (c == '"') count++;
+        }
+        return (count & 1) == 1;
     }
 
     /** Small POSIX-like tokenizer for the generated QEMU command line. */
@@ -96,28 +210,12 @@ public final class NativeQemuRunner {
 
         for (int i = 0; i < command.length(); i++) {
             char c = command.charAt(i);
-            if (escape) {
-                current.append(c);
-                escape = false;
-                continue;
-            }
-            if (c == '\\' && !single) {
-                escape = true;
-                continue;
-            }
-            if (c == '\'' && !quoted) {
-                single = !single;
-                continue;
-            }
-            if (c == '"' && !single) {
-                quoted = !quoted;
-                continue;
-            }
+            if (escape) { current.append(c); escape = false; continue; }
+            if (c == '\\' && !single) { escape = true; continue; }
+            if (c == '\'' && !quoted) { single = !single; continue; }
+            if (c == '"' && !single) { quoted = !quoted; continue; }
             if (Character.isWhitespace(c) && !single && !quoted) {
-                if (current.length() > 0) {
-                    args.add(current.toString());
-                    current.setLength(0);
-                }
+                if (current.length() > 0) { args.add(current.toString()); current.setLength(0); }
                 continue;
             }
             current.append(c);
