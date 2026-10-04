@@ -21,7 +21,7 @@ public final class NativeQemuRunner {
     private static final String TAG = "NativeQemuRunner";
     private static final int MAX_LOG_SIZE = 200_000;
     private static final Pattern QEMU_COMMAND_PATTERN = Pattern.compile(
-            "(^|\\s)(qemu-system-(?:i386|x86_64|aarch64|ppc))(?=\\s|$)"
+            "(^|\\s)(qemu-system-(?:i386|x86_64|aarch64|ppc)|qemu-img)(?=\\s|$)"
     );
 
     private static volatile Process currentProcess;
@@ -57,10 +57,10 @@ public final class NativeQemuRunner {
         new Thread(() -> executeBlocking(context, command, callback), "NativeQemu").start();
     }
 
-    private static void executeBlocking(Context context, String command, Callback callback) {
+    public static void executeBlocking(Context context, String command, Callback callback) {
         try {
             String qemuName = extractQemuName(command);
-            if (qemuName == null) throw new IllegalArgumentException("No supported qemu-system executable found");
+            if (qemuName == null) throw new IllegalArgumentException("No supported QEMU executable found");
 
             File payload = getNativeLibrary(context, qemuName);
             if (!payload.isFile()) throw new IllegalStateException("Native QEMU payload is missing: " + payload);
@@ -73,10 +73,14 @@ public final class NativeQemuRunner {
             List<String> argv = new ArrayList<>(Arrays.asList(parsed));
             argv.set(0, payload.getAbsolutePath());
 
-            File firmware = new File(runtime, "share/qemu");
-            if (firmware.isDirectory() && !containsOption(argv, "-L")) {
-                argv.add("-L");
-                argv.add(firmware.getAbsolutePath());
+            // qemu-system-* needs the bundled firmware directory. qemu-img does not
+            // understand the -L option, so never append it to utility commands.
+            if (qemuName.startsWith("qemu-system-")) {
+                File firmware = new File(runtime, "share/qemu");
+                if (firmware.isDirectory() && !containsOption(argv, "-L")) {
+                    argv.add("-L");
+                    argv.add(firmware.getAbsolutePath());
+                }
             }
 
             try {
