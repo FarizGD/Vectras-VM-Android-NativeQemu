@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Environment;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -14,6 +15,7 @@ import androidx.core.os.LocaleListCompat;
 import androidx.preference.PreferenceManager;
 
 import com.google.android.material.color.DynamicColors;
+import com.google.firebase.FirebaseApp;
 import com.google.firebase.analytics.FirebaseAnalytics;
 import com.google.firebase.crashlytics.FirebaseCrashlytics;
 import com.vectras.qemu.Config;
@@ -26,6 +28,7 @@ import com.vectras.vm.utils.UIUtils;
 import java.lang.ref.WeakReference;
 
 public class VectrasApp extends Application {
+    private static final String TAG = "VectrasApp";
     public static VectrasApp vectrasapp;
     private static WeakReference<Context> context;
 
@@ -97,13 +100,25 @@ public class VectrasApp extends Application {
             }
         });
 
-        FirebaseCrashlytics.getInstance().log("App started: " + AppConfig.vectrasVersion);
+        // Public/source builds may intentionally omit google-services.json. In that
+        // case FirebaseApp has no default configuration and Firebase service getters
+        // throw during Application startup. Keep Firebase optional so the VM frontend
+        // can run without project-specific Firebase credentials.
+        boolean firebaseAvailable = FirebaseApp.initializeApp(this) != null;
 
         if (GmsChecker.isAvailable(this)) {
             AppConfig.isGmsAvailable = true;
-            FirebaseAnalytics.getInstance(this).logEvent(FirebaseAnalytics.Event.APP_OPEN, null);
+        }
+
+        if (firebaseAvailable) {
+            FirebaseCrashlytics.getInstance().log("App started: " + AppConfig.vectrasVersion);
+            if (AppConfig.isGmsAvailable) {
+                FirebaseAnalytics.getInstance(this).logEvent(FirebaseAnalytics.Event.APP_OPEN, null);
+            } else {
+                FirebaseCrashlytics.getInstance().log("Device does not support GMS.");
+            }
         } else {
-            FirebaseCrashlytics.getInstance().log("Device does not support GMS.");
+            Log.i(TAG, "Firebase configuration is unavailable; analytics and Crashlytics are disabled.");
         }
     }
 
