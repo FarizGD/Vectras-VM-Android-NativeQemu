@@ -6,6 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 
 import com.vectras.vm.AppConfig;
+import com.vectras.vm.NativeQemuRunner;
 import com.vectras.vm.R;
 import com.vectras.vterm.Terminal2;
 
@@ -24,6 +25,13 @@ public class LibraryChecker {
     }
 
     public void checkMissingLibraries(Activity activity) {
+        // Native-QEMU builds bundle the runtime directly in the APK and do not use
+        // the legacy Alpine/proot environment. Running `apk info` here would try to
+        // launch files/usr/bin/proot, which intentionally does not exist.
+        if (NativeQemuRunner.canExecute(context, "qemu-system-x86_64")) {
+            return;
+        }
+
         // List of required libraries
         String[] requiredLibraries = DeviceUtils.is64bit() ? AppConfig.neededPkgs().split(" ") : AppConfig.neededPkgs32bit().split(" ");
 
