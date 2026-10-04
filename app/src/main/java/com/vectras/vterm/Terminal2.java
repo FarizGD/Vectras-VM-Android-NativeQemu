@@ -6,6 +6,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.vectras.vm.AppConfig;
+import com.vectras.vm.NativeQemuRunner;
 import com.vectras.vm.R;
 import com.vectras.vm.logger.VectrasStatus;
 import com.vectras.vm.utils.FileUtils;
@@ -109,6 +110,36 @@ public class Terminal2 {
             }
 
             try {
+                String fullCommand = (startup.isEmpty() ? "" : startup + " && ") + command;
+
+                // Native-QEMU builds do not contain the legacy Alpine/proot rootfs.
+                // Route packaged QEMU tools (qemu-system-* and qemu-img) directly.
+                if (NativeQemuRunner.canExecute(context, command)) {
+                    NativeQemuRunner.executeBlocking(context, command, new NativeQemuRunner.Callback() {
+                        @Override
+                        public void onRunning(String runningCommand, String newLine) {
+                            if (progressDialog != null) {
+                                new Handler(Looper.getMainLooper()).post(() -> progressDialog.setText(newLine));
+                            }
+                            if (callback != null) callback.onRunning(command, newLine);
+                        }
+
+                        @Override
+                        public void onFinished(String runningCommand, String log, int status) {
+                            addToLogs(command, log);
+                            if (callback != null) callback.onFinished(command, log, status);
+                        }
+
+                        @Override
+                        public void onError(String runningCommand, Exception exception) {
+                            String message = exception.getMessage() == null ? exception.toString() : exception.getMessage();
+                            addToLogs(command, message);
+                            if (callback != null) callback.onError(command, exception);
+                        }
+                    });
+                    return;
+                }
+
                 ProcessBuilder processBuilder = new ProcessBuilder();
                 processBuilder.redirectErrorStream(true);
 
@@ -156,7 +187,7 @@ public class Terminal2 {
                 processBuilder.command(prootCommand);
                 process.set(processBuilder.start());
 
-                resultData data = startProcess((startup.isEmpty() ? "" : startup + " && ") + command, process.get(), callback);
+                resultData data = startProcess(fullCommand, process.get(), callback);
 
                 if (callback != null) callback.onFinished(command, data.log.toString(), data.status);
             } catch (Exception e) {
