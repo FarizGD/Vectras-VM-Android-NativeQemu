@@ -3,8 +3,11 @@ package com.vectras.vm.utils;
 import android.app.Activity;
 import android.content.Context;
 
+import com.vectras.vm.NativeQemuRunner;
 import com.vectras.vm.VectrasApp;
 import com.vectras.vterm.Terminal2;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 public class CommandUtils {
     public static String createForSelectedMirror(boolean _https, String _url, String _beforemain) {
@@ -32,10 +35,48 @@ public class CommandUtils {
     }
 
     public static String getQemuVersion(Context context) {
-        return VectrasApp.getContext() == null ? "Unknow" : new Terminal2(context).executeOnThisThread("qemu-system-x86_64 --version | head -n1 | awk '{print $4}'").replaceAll("\n", "");
+        if (VectrasApp.getContext() == null) return "Unknow";
+
+        if (NativeQemuRunner.canExecute(context, "qemu-system-x86_64 --version")) {
+            String output = runNativeVersion(context);
+            if (output.isEmpty()) return "Unknow";
+            String firstLine = output.split("\\R", 2)[0].trim();
+            String[] parts = firstLine.split("\\s+");
+            return parts.length >= 4 ? parts[3] : firstLine;
+        }
+
+        return new Terminal2(context)
+                .executeOnThisThread("qemu-system-x86_64 --version | head -n1 | awk '{print $4}'")
+                .replaceAll("\n", "");
     }
 
     public static boolean is3dfxVersion(Context context) {
-        return VectrasApp.getContext() != null && new Terminal2(context).executeOnThisThread("qemu-system-x86_64 --version").contains("3dfx");
+        if (VectrasApp.getContext() == null) return false;
+        if (NativeQemuRunner.canExecute(context, "qemu-system-x86_64 --version")) {
+            return runNativeVersion(context).contains("3dfx");
+        }
+        return new Terminal2(context).executeOnThisThread("qemu-system-x86_64 --version").contains("3dfx");
+    }
+
+    private static String runNativeVersion(Context context) {
+        AtomicReference<String> output = new AtomicReference<>("");
+        NativeQemuRunner.executeBlocking(context, "qemu-system-x86_64 --version", new NativeQemuRunner.Callback() {
+            @Override
+            public void onRunning(String command, String newLine) {
+                String current = output.get();
+                output.set(current + newLine + "\n");
+            }
+
+            @Override
+            public void onFinished(String command, String log, int status) {
+                if (!log.isEmpty()) output.set(log);
+            }
+
+            @Override
+            public void onError(String command, Exception exception) {
+                output.set("");
+            }
+        });
+        return output.get().trim();
     }
 }
