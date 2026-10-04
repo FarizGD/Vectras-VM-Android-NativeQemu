@@ -14,6 +14,9 @@ on:
       - 'app/src/main/cpp/CMakeLists.txt'
       - 'app/build.gradle'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: arm64 native QEMU + debug APK
@@ -105,15 +108,31 @@ jobs:
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'lib/arm64-v8a/libqemu-system-(x86_64|aarch64|i386|ppc)\.so'
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'assets/native-qemu/runtime-manifest.txt'
 
+      - name: Prepare release files
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Vectras-NativeQEMU-arm64-debug.apk
+          cp app/src/main/assets/native-qemu/runtime-manifest.txt native-qemu-runtime-manifest.txt
+
       - name: Upload native Vectras APK
         uses: actions/upload-artifact@v4
         with:
           name: vectras-native-qemu-arm64-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: Vectras-NativeQEMU-arm64-debug.apk
           compression-level: 0
 
       - name: Upload runtime manifest
         uses: actions/upload-artifact@v4
         with:
           name: native-qemu-runtime-manifest
-          path: app/src/main/assets/native-qemu/runtime-manifest.txt
+          path: native-qemu-runtime-manifest.txt
+
+      - name: Publish successful build to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: native-qemu-${{ github.run_number }}
+          name: Native QEMU build #${{ github.run_number }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            Vectras-NativeQEMU-arm64-debug.apk
+            native-qemu-runtime-manifest.txt
