@@ -76,6 +76,8 @@ public final class NativeQemuRunner {
             // qemu-system-* needs the bundled firmware directory. qemu-img does not
             // understand the -L option, so never append it to utility commands.
             if (qemuName.startsWith("qemu-system-")) {
+                normalizeAudioBackendForAndroid(argv);
+
                 File firmware = new File(runtime, "share/qemu");
                 if (firmware.isDirectory() && !containsOption(argv, "-L")) {
                     argv.add("-L");
@@ -98,6 +100,30 @@ public final class NativeQemuRunner {
         } catch (Exception e) {
             Log.e(TAG, "Native QEMU failed", e);
             if (callback != null) callback.onError(command, e);
+        }
+    }
+
+    /**
+     * The Termux-built QEMU runtime has no Android host audio service to open directly.
+     * Keep the guest sound device but replace configured host backends with QEMU's
+     * built-in silent backend. This prevents audio initialization from aborting the VM.
+     */
+    private static void normalizeAudioBackendForAndroid(List<String> argv) {
+        for (int i = 0; i < argv.size(); i++) {
+            String arg = argv.get(i);
+            if ("-audiodev".equals(arg) && i + 1 < argv.size()) {
+                String value = argv.get(i + 1);
+                String id = null;
+                for (String part : value.split(",")) {
+                    if (part.startsWith("id=")) {
+                        id = part.substring(3);
+                        break;
+                    }
+                }
+                argv.set(i + 1, id == null || id.isEmpty() ? "none,id=audio0" : "none,id=" + id);
+            } else if ("-audio".equals(arg) && i + 1 < argv.size()) {
+                argv.set(i + 1, "none");
+            }
         }
     }
 
