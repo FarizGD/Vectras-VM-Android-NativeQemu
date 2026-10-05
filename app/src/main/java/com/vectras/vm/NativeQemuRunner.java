@@ -76,6 +76,7 @@ public final class NativeQemuRunner {
             // qemu-system-* needs the bundled firmware directory. qemu-img does not
             // understand the -L option, so never append it to utility commands.
             if (qemuName.startsWith("qemu-system-")) {
+                normalizeLegacyCdromParams(argv);
                 normalizeAudioBackendForAndroid(argv);
 
                 File firmware = new File(runtime, "share/qemu");
@@ -100,6 +101,26 @@ public final class NativeQemuRunner {
         } catch (Exception e) {
             Log.e(TAG, "Native QEMU failed", e);
             if (callback != null) callback.onError(command, e);
+        }
+    }
+
+    /**
+     * Older Vectras command generation used values such as media=cdromdrive1.
+     * QEMU only accepts media=disk or media=cdrom. Preserve the intended drive id
+     * while converting the invalid media value before starting native QEMU.
+     */
+    private static void normalizeLegacyCdromParams(List<String> argv) {
+        for (int i = 0; i + 1 < argv.size(); i++) {
+            if (!"-drive".equals(argv.get(i))) continue;
+
+            String value = argv.get(i + 1);
+            Matcher matcher = Pattern.compile("(^|,)media=(cdromdrive[0-9]+)(?=,|$)").matcher(value);
+            if (!matcher.find()) continue;
+
+            String driveId = matcher.group(2);
+            String normalized = matcher.replaceFirst("$1media=cdrom,id=" + driveId);
+            argv.set(i + 1, normalized);
+            Log.i(TAG, "Normalized legacy CD-ROM drive option: " + normalized);
         }
     }
 
